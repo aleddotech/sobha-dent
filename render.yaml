@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sobha-dent-api
+    runtime: docker
+    plan: standard
+    healthCheckPath: /health
+    envVars:
+      - key: SOBHA_DENT_MODEL
+        value: yolov8s
+      - key: CORS_ORIGINS
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"

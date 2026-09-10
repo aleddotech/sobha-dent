@@ -1,0 +1,10 @@
+.git
+.mpl
+models
+__pycache__
+*.pyc
+.venv
+.DS_Store
+DEPLOY.md
+web/vercel.json
+environment.yml

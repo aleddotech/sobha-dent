@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sobha Dent</title>
+  <style>
+    :root {
+      --bg: #0f1216;
+      --panel: #171c22;
+      --line: #2a323c;
+      --text: #e8edf2;
+      --muted: #8b98a6;
+      --accent: #e85d3e;
+      --blue: #2f80ed;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: radial-gradient(1200px 600px at 80% -10%, #1c2633 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+    header {
+      padding: 28px 28px 8px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 22px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.02em; }
+    p.sub { margin: 0; color: var(--muted); font-size: 14px; }
+    main { max-width: 1100px; margin: 0 auto; padding: 20px 28px 48px; }
+    .drop {
+      border: 1.5px dashed var(--line);
+      background: var(--panel);
+      border-radius: 16px;
+      min-height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .drop.hover, .drop:hover { border-color: var(--accent); background: #1c232c; }
+    .drop strong { color: var(--accent); }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+    label { font-size: 13px; color: var(--muted); }
+    input[type=range] { width: 160px; }
+    .stage {
+      margin-top: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: hidden;
+      min-height: 240px;
+      position: relative;
+    }
+    .stage img { display: block; width: 100%; height: auto; }
+    .empty { padding: 64px 24px; text-align: center; color: var(--muted); }
+    .meta {
+      display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px;
+    }
+    .pill {
+      background: #222a33;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    .pill.dent { border-color: #e85d3e55; color: #ffb4a4; }
+    .pill.scratch { border-color: #2f80ed55; color: #9ec2ff; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 550; }
+    .busy { opacity: 0.55; pointer-events: none; }
+    .err { color: #ff8a80; font-size: 13px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sobha Dent</h1>
+    <p class="sub">Drop a vehicle photo. CarDD YOLO draws boxes on dents, scratches, and related damage.</p>
+  </header>
+  <main>
+    <div class="drop" id="drop">
+      <div>
+        <div><strong>Drag & drop</strong> an image here, or click to browse</div>
+        <div style="color:var(--muted);font-size:13px;margin-top:6px">JPEG, PNG, WebP</div>
+      </div>
+    </div>
+    <input type="file" id="file" accept="image/*" hidden />
+    <div class="row">
+      <label>Confidence <span id="confv">0.25</span>
+        <input id="conf" type="range" min="0.1" max="0.7" step="0.05" value="0.25" />
+      </label>
+      <label><input type="checkbox" id="focus" /> dents & scratches only</label>
+    </div>
+    <div class="err" id="err"></div>
+    <div class="meta" id="meta"></div>
+    <div class="stage" id="stage"><div class="empty">No image yet</div></div>
+    <table id="tbl" hidden>
+      <thead><tr><th>Class</th><th>Confidence</th><th>Box (x1 y1 x2 y2)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </main>
+  <script src="./config.js"></script>
+  <script>
+    const API = String(window.SOBHA_API || "").replace(/\/$/, "");
+    const drop = document.getElementById("drop");
+    const file = document.getElementById("file");
+    const conf = document.getElementById("conf");
+    const confv = document.getElementById("confv");
+    const focus = document.getElementById("focus");
+    const stage = document.getElementById("stage");
+    const meta = document.getElementById("meta");
+    const err = document.getElementById("err");
+    const tbl = document.getElementById("tbl");
+    const tbody = tbl.querySelector("tbody");
+    let lastFile = null;
+
+    conf.addEventListener("input", () => confv.textContent = conf.value);
+
+    drop.addEventListener("click", () => file.click());
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("hover"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("hover"));
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault();
+      drop.classList.remove("hover");
+      const f = e.dataTransfer.files[0];
+      if (f) run(f);
+    });
+    file.addEventListener("change", () => { if (file.files[0]) run(file.files[0]); });
+    conf.addEventListener("change", () => { if (lastFile) run(lastFile); });
+    focus.addEventListener("change", () => { if (lastFile) run(lastFile); });
+
+    async function run(f) {
+      lastFile = f;
+      err.textContent = "";
+      document.body.classList.add("busy");
+      stage.innerHTML = '<div class="empty">Detecting…</div>';
+      const fd = new FormData();
+      fd.append("file", f);
+      const q = new URLSearchParams({
+        conf: conf.value,
+        focus_only: focus.checked ? "true" : "false",
+      });
+      try {
+        const res = await fetch(API + "/detect?" + q.toString(), { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "detect failed");
+        stage.innerHTML = `<img alt="annotated" src="data:image/jpeg;base64,${data.annotated_jpeg_b64}" />`;
+        meta.innerHTML = `
+          <span class="pill">${data.count} detections</span>
+          <span class="pill dent">${data.dents} dent</span>
+          <span class="pill scratch">${data.scratches} scratch</span>
+          <span class="pill">${data.width}×${data.height}</span>
+          <span class="pill">${data.weights}</span>
+        `;
+        tbody.innerHTML = data.detections.map(d =>
+          `<tr><td>${d.label}</td><td>${(d.confidence*100).toFixed(1)}%</td><td>${d.box.map(n => n.toFixed(0)).join(", ")}</td></tr>`
+        ).join("") || `<tr><td colspan="3">No boxes above confidence ${conf.value}</td></tr>`;
+        tbl.hidden = false;
+      } catch (e) {
+        err.textContent = e.message;
+        stage.innerHTML = '<div class="empty">Failed</div>';
+      } finally {
+        document.body.classList.remove("busy");
+      }
+    }
+  </script>
+</body>
+</html>

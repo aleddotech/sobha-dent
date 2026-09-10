@@ -1,0 +1,10 @@
+{
+  "buildCommand": "node -e \"require('fs').writeFileSync('config.js', 'window.SOBHA_API = ' + JSON.stringify(process.env.SOBHA_API_URL || '') + ';\\n')\"",
+  "outputDirectory": ".",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}
