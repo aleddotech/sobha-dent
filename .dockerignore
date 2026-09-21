@@ -1,10 +1,10 @@
 .git
 .mpl
-models
-__pycache__
-*.pyc
 .venv
-.DS_Store
-DEPLOY.md
-web/vercel.json
-environment.yml
+data
+models
+runs
+*.pt
+__pycache__
+.env
+zero_shot_object_detection_and_segmentation.ipynb

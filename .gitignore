@@ -8,3 +8,9 @@ uploads/
 .ipynb_checkpoints/
 .mpl/
 *.pt
+runs/
+data/raw/
+data/yolo/
+data/val_realworld/
+data/examples/
+.env

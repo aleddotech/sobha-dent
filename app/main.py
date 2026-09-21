@@ -3,36 +3,23 @@ from __future__ import annotations
 import base64
 import io
 import os
-import sys
 from pathlib import Path
 
-import numpy as np
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
-from ultralytics import YOLO
+
+from app.gemini_detect import annotate, detect_image
 
 ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
+
 WEB = ROOT / "web"
-MODELS = ROOT / "models"
-
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-FOCUS = {"dent", "scratch"}
-COLORS = {
-    "dent": (232, 93, 62),
-    "scratch": (47, 128, 237),
-    "crack": (242, 201, 76),
-    "glass_shatter": (111, 207, 151),
-    "lamp_broken": (155, 81, 224),
-    "tire_flat": (130, 130, 130),
-}
-
-_model: YOLO | None = None
-_weight_path: Path | None = None
+STATIC = ROOT / "app" / "static"
+UI = WEB if (WEB / "index.html").exists() else STATIC
 
 
 def cors_origins() -> list[str]:
@@ -40,28 +27,6 @@ def cors_origins() -> list[str]:
     if raw == "*":
         return ["*"]
     return [o.strip() for o in raw.split(",") if o.strip()]
-
-
-def weight_file() -> Path:
-    choice = os.environ.get("SOBHA_DENT_MODEL", "yolov8s").lower()
-    if choice == "yolo11":
-        p = MODELS / "cardd-yolo11x-seg.pt"
-    else:
-        p = MODELS / "cardd-yolov8s-seg.pt"
-    if not p.exists():
-        from download_weights import download
-
-        p = download(choice)
-    return p
-
-
-def get_model() -> YOLO:
-    global _model, _weight_path
-    path = weight_file()
-    if _model is None or _weight_path != path:
-        _model = YOLO(str(path))
-        _weight_path = path
-    return _model
 
 
 app = FastAPI(title="Sobha Dent")
@@ -73,89 +38,85 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.mount("/static", StaticFiles(directory=WEB), name="static")
+if UI.exists():
+    app.mount("/static", StaticFiles(directory=UI), name="static")
 
 
 @app.get("/")
 def index():
-    return FileResponse(WEB / "index.html")
+    return FileResponse(UI / "index.html")
+
+
+@app.get("/config.js")
+def config_js():
+    path = UI / "config.js"
+    if path.exists():
+        return FileResponse(path, media_type="application/javascript")
+    return Response("window.SOBHA_API = '';\n", media_type="application/javascript")
 
 
 @app.get("/health")
 def health():
-    path = weight_file()
     return {
         "ok": True,
-        "weights": path.name,
-        "model": os.environ.get("SOBHA_DENT_MODEL", "yolov8s"),
+        "backend": "gemini",
+        "model": os.environ.get("GEMINI_MODEL", "gemini-3.7-flash"),
+        "has_key": bool(os.environ.get("GOOGLE_API_KEY", "").strip()),
     }
 
 
 @app.post("/detect")
 async def detect(
     file: UploadFile = File(...),
-    conf: float = 0.25,
-    focus_only: bool = False,
+    focus_only: bool = True,
 ):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "Upload an image file")
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "Empty file")
-
     try:
         image = Image.open(io.BytesIO(raw)).convert("RGB")
     except Exception as exc:
         raise HTTPException(400, f"Could not read image: {exc}") from exc
 
-    model = get_model()
-    results = model.predict(
-        source=np.array(image),
-        conf=conf,
-        verbose=False,
-        imgsz=640,
-    )
-    r = results[0]
-    names = r.names if isinstance(r.names, dict) else {i: n for i, n in enumerate(r.names)}
+    try:
+        detections, raw_text = detect_image(image, focus_only=focus_only)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Gemini detect failed: {exc}") from exc
 
-    detections = []
-    if r.boxes is not None and len(r.boxes):
-        xyxy = r.boxes.xyxy.cpu().numpy()
-        confs = r.boxes.conf.cpu().numpy()
-        clss = r.boxes.cls.cpu().numpy().astype(int)
-        for box, score, cid in zip(xyxy, confs, clss):
-            label = str(names.get(int(cid), cid)).replace(" ", "_")
-            if focus_only and label not in FOCUS:
-                continue
-            x1, y1, x2, y2 = [float(v) for v in box]
-            detections.append(
-                {
-                    "label": label,
-                    "confidence": float(score),
-                    "box": [x1, y1, x2, y2],
-                    "color": COLORS.get(label, (200, 200, 200)),
-                }
-            )
-
-    plotted = r.plot()
-    annotated = Image.fromarray(plotted[..., ::-1])
+    annotated = annotate(image, detections)
     buf = io.BytesIO()
     annotated.save(buf, format="JPEG", quality=90)
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    payload = []
+    for d in detections:
+        payload.append(
+            {
+                "label": d.label,
+                "confidence": d.confidence,
+                "box": d.box,
+                "polygon": [[float(x), float(y)] for x, y in d.polygon],
+                "n_points": d.n_points,
+                "area_frac": d.area_frac,
+                "color": d.color,
+            }
+        )
 
     w, h = image.size
-    dents = sum(1 for d in detections if d["label"] == "dent")
-    scratches = sum(1 for d in detections if d["label"] == "scratch")
-
     return JSONResponse(
         {
             "width": w,
             "height": h,
-            "weights": weight_file().name,
-            "count": len(detections),
-            "dents": dents,
-            "scratches": scratches,
-            "detections": detections,
-            "annotated_jpeg_b64": b64,
+            "backend": "gemini",
+            "model": os.environ.get("GEMINI_MODEL", "gemini-3.7-flash"),
+            "count": len(payload),
+            "dents": sum(1 for d in payload if d["label"] == "dent"),
+            "scratches": sum(1 for d in payload if d["label"] == "scratch"),
+            "detections": payload,
+            "annotated_jpeg_b64": base64.b64encode(buf.getvalue()).decode("ascii"),
+            "raw_model_text": raw_text[:4000],
         }
     )
